@@ -29,12 +29,19 @@ import (
 	drive "google.golang.org/api/drive/v3"
 )
 
+// TODO: protect against path traversal (Drive allows a folder named "..")
+// TODO: handle moves by copying local file rather than re-downloading
+
 var (
 	// Where to download from.
 	fromFolderID = flag.String("from_folder_id", "", "The ID of the root folder to download from.")
 
 	// Where to download to.
 	toDir = flag.String("to_dir", "", "The directory to download to.")
+
+	// How to sync.
+	dryRun          = flag.Bool("dry_run", false, "If set, do not actually change filesystem state.")
+	removeLocalOnly = flag.Bool("remove_local_only", false, "If set, remove files that are local-only.")
 
 	// Miscellaneous options.
 	concurrency = flag.Int("concurrency", 0, "The amount of concurrency to use for certain operations. By default, use GOMAXPROCS.")
@@ -510,20 +517,35 @@ func main() {
 	}
 
 	diffs := diff(lfis, rfis)
-	var diffPaths []string
+	var dlPaths, rmPaths []string
 	for p, typ := range diffs {
-		if typ != LOCAL_ONLY {
-			diffPaths = append(diffPaths, p)
+		switch typ {
+		case REMOTE_ONLY, MODIFIED:
+			dlPaths = append(dlPaths, p)
+		case LOCAL_ONLY:
+			rmPaths = append(rmPaths, p)
 		}
 	}
-	sort.Strings(diffPaths)
+	sort.Strings(dlPaths)
+	sort.Strings(rmPaths)
 	var totalSize int64
-	for _, p := range diffPaths {
-		dt, rfi := diffs[p], rfis[p]
-		verbose("File %q is %v, will download [size = %s]", p, dt, size(rfi.size))
-		totalSize += rfi.size
+	for _, p := range dlPaths {
+		sz := rfis[p].size
+		verbose("File %q is %v, will download [size = %s]", p, diffs[p], size(sz))
+		totalSize += sz
 	}
-	verbose("Total download size: %s", size(totalSize))
+	for _, p := range rmPaths {
+		suffix := ""
+		if *removeLocalOnly {
+			suffix = ", will remove"
+		}
+		verbose("File %q is %v%s", p, diffs[p], suffix)
+	}
+
+	if *dryRun {
+		info("Dry-run -- not changing filesystem state.")
+		return
+	}
 
 	// Download files.
 	ctx = context.Background()
@@ -549,7 +571,7 @@ func main() {
 				cnt, sz := stats.dlCount, stats.dlSize
 				stats.Unlock()
 
-				info("[%d / %d, %s / %s] Downloading %q", cnt, len(diffPaths), size(sz), size(totalSize), p)
+				info("[%d / %d, %s / %s] Downloading %q", cnt, len(dlPaths), size(sz), size(totalSize), p)
 				if err := download(ctx, drv, filepath.Join(*toDir, p), rfi.id); err != nil {
 					stats.Lock()
 					stats.errors++
@@ -560,13 +582,27 @@ func main() {
 		}()
 	}
 
-	for _, p := range diffPaths {
+	for _, p := range dlPaths {
 		ch <- p
 	}
 	close(ch)
 	wg.Wait()
 	if stats.errors > 0 {
-		die("Encountered %d errors", stats.errors)
-		os.Exit(1)
+		die("Encountered %d errors while downloading", stats.errors)
+	}
+
+	// Remove files (if requested).
+	var rmErrors int
+	if *removeLocalOnly {
+		for i, p := range rmPaths {
+			info("[%d / %d] Removing %q", i+1, len(rmPaths), p)
+			if err := os.Remove(filepath.Join(*toDir, p)); err != nil {
+				rmErrors++
+				warning("Could not remove %q: %v", p, err)
+			}
+		}
+	}
+	if rmErrors > 0 {
+		die("Encountered %d errors while removing", rmErrors)
 	}
 }
