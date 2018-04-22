@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BranLwyd/drive/cli"
 	"github.com/BranLwyd/drive/client"
 	drive "google.golang.org/api/drive/v3"
 )
@@ -16,25 +17,19 @@ var (
 	deadline = flag.Duration("deadline", 2*time.Minute, "How long to try pushing before timing out.")
 )
 
-func fail(format string, args ...interface{}) {
-	fmt.Fprintf(os.Stderr, format, args...)
-	fmt.Fprint(os.Stderr, "\n")
-	os.Exit(1)
-}
-
 func main() {
 	// Parse & sanity-check flags & command-line arguments.
 	flag.Parse()
 	if *deadline <= 0 {
-		fail("--deadline must be positive")
+		cli.DieWithUsage("--deadline must be positive")
 	}
 
 	if len(flag.Args()) != 2 {
-		fail("Usage: %s <local-file> <remote-file>", os.Args[0])
+		cli.DieWithUsage("Usage: %s <local-file> <remote-file>", os.Args[0])
 	}
 	f, err := os.Open(flag.Arg(0))
 	if err != nil {
-		fail("Couldn't open local file: %v", err)
+		cli.DieWithUsage("Couldn't open local file: %v", err)
 	}
 	defer f.Close()
 	driveFile := flag.Arg(1)
@@ -44,7 +39,7 @@ func main() {
 	defer cancel()
 	drv, err := client.Client(ctx)
 	if err != nil {
-		fail("Couldn't create Google Drive client: %v", err)
+		cli.Die("Couldn't create Google Drive client: %v", err)
 	}
 
 	// Traverse into the Google Drive path to find the ID of the parent of the file.
@@ -56,13 +51,13 @@ func main() {
 		q := fmt.Sprintf(`name = '%s' and '%s' in parents and mimeType = 'application/vnd.google-apps.folder' and not trashed`, pe, parentID)
 		lst, err := drv.Files.List().Context(ctx).Q(q).Fields("files/id").Do()
 		if err != nil {
-			fail("Couldn't list directory %q: %v", strings.Join(path[:i], "/"), err)
+			cli.Die("Couldn't list directory %q: %v", strings.Join(path[:i], "/"), err)
 		}
 		if len(lst.Files) == 0 {
-			fail("Couldn't find Google Drive directory %q", strings.Join(path[:i+1], "/"))
+			cli.Die("Couldn't find Google Drive directory %q", strings.Join(path[:i+1], "/"))
 		}
 		if len(lst.Files) > 1 {
-			fail("Directory specification %q is ambiguous", strings.Join(path[:i+1], "/"))
+			cli.Die("Directory specification %q is ambiguous", strings.Join(path[:i+1], "/"))
 		}
 		parentID = lst.Files[0].Id
 	}
@@ -77,17 +72,17 @@ func main() {
 			Name:    filename,
 			Parents: []string{parentID},
 		}).Context(ctx).Media(f).Do(); err != nil {
-			fail("Failed to create file: %v", err)
+			cli.Die("Failed to create file: %v", err)
 		}
 
 	case 1:
 		// File already exists; update it.
 		id := lst.Files[0].Id
 		if _, err := drv.Files.Update(id, nil).Context(ctx).Media(f).Do(); err != nil {
-			fail("Failed to update file: %v", err)
+			cli.Die("Failed to update file: %v", err)
 		}
 
 	default:
-		fail("File specification %q is ambiguous", driveFile)
+		cli.Die("File specification %q is ambiguous", driveFile)
 	}
 }

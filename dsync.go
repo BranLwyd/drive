@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BranLwyd/drive/cli"
 	"github.com/BranLwyd/drive/client"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
@@ -194,7 +195,7 @@ func remoteFileInfos(ctx context.Context, drv *drive.Service, remoteFolderID str
 					}()
 					var pageToken string
 					q := fmt.Sprintf(`'%s' in parents and not trashed`, wi.folderID)
-					verbose("Listing remote folder %q", wi.path)
+					cli.Verbose("Listing remote folder %q", wi.path)
 					for {
 						if err := lim.Wait(ctx); err != nil {
 							return err
@@ -328,35 +329,6 @@ func download(ctx context.Context, drv *drive.Service, localFN, driveID string) 
 	return nil
 }
 
-func info(format string, args ...interface{}) {
-	if *isQuiet {
-		return
-	}
-	fmt.Printf(format+"\n", args...)
-}
-
-func verbose(format string, args ...interface{}) {
-	if *isQuiet || !*isVerbose {
-		return
-	}
-	fmt.Printf(format+"\n", args...)
-}
-
-func warning(format string, args ...interface{}) {
-	fmt.Fprintf(os.Stderr, format+"\n", args...)
-}
-
-func die(format string, args ...interface{}) {
-	fmt.Fprintf(os.Stderr, format+"\n", args...)
-	os.Exit(1)
-}
-
-func dieWithUsage(format string, args ...interface{}) {
-	fmt.Fprintf(os.Stderr, format+"\n\n", args...)
-	flag.Usage()
-	os.Exit(1)
-}
-
 func size(sz int64) string {
 	switch {
 	case sz >= 1<<40:
@@ -380,14 +352,14 @@ func main() {
 	}
 	flag.Parse()
 
+	if err := cli.Setup(*isQuiet, *isVerbose); err != nil {
+		cli.DieWithUsage("CLI setup: %v", err)
+	}
 	if *fromFolderID == "" {
-		dieWithUsage("--from_folder_id is required")
+		cli.DieWithUsage("--from_folder_id is required")
 	}
 	if *toDir == "" {
-		dieWithUsage("--to_dir is required")
-	}
-	if *isQuiet && *isVerbose {
-		dieWithUsage("--quiet and --verbose are mutually exclusive")
+		cli.DieWithUsage("--to_dir is required")
 	}
 	if *concurrency == 0 {
 		*concurrency = runtime.GOMAXPROCS(0)
@@ -398,11 +370,11 @@ func main() {
 	// Create Google Drive client.
 	drv, err := client.Client(context.Background())
 	if err != nil {
-		die("Couldn't create Google Drive client: %v", err)
+		cli.Die("Couldn't create Google Drive client: %v", err)
 	}
 
 	// List local & remote.
-	info("Retrieving & diffing local & remote repositories")
+	cli.Info("Retrieving & diffing local & remote repositories")
 	eg, ctx := errgroup.WithContext(context.Background())
 
 	var lfis map[string]localFileInfo
@@ -420,7 +392,7 @@ func main() {
 	})
 
 	if err := eg.Wait(); err != nil {
-		die("Could not retrieve local & remote repositories: %v", err)
+		cli.Die("Could not retrieve local & remote repositories: %v", err)
 	}
 
 	diffs := diff(lfis, rfis)
@@ -438,7 +410,7 @@ func main() {
 	var totalSize int64
 	for _, p := range dlPaths {
 		sz := rfis[p].size
-		verbose("File %q is %v, will download [size = %s]", p, diffs[p], size(sz))
+		cli.Verbose("File %q is %v, will download [size = %s]", p, diffs[p], size(sz))
 		totalSize += sz
 	}
 	for _, p := range rmPaths {
@@ -446,11 +418,11 @@ func main() {
 		if *removeLocalOnly {
 			suffix = ", will remove"
 		}
-		verbose("File %q is %v%s", p, diffs[p], suffix)
+		cli.Verbose("File %q is %v%s", p, diffs[p], suffix)
 	}
 
 	if *dryRun {
-		info("Dry-run -- not changing filesystem state.")
+		cli.Info("Dry-run -- not changing filesystem state.")
 		return
 	}
 
@@ -478,12 +450,12 @@ func main() {
 				cnt, sz := stats.dlCount, stats.dlSize
 				stats.Unlock()
 
-				info("[%d / %d, %s / %s] Downloading %q", cnt, len(dlPaths), size(sz), size(totalSize), p)
+				cli.Info("[%d / %d, %s / %s] Downloading %q", cnt, len(dlPaths), size(sz), size(totalSize), p)
 				if err := download(ctx, drv, filepath.Join(*toDir, p), rfi.id); err != nil {
 					stats.Lock()
 					stats.errors++
 					stats.Unlock()
-					warning("Could not download %q: %v", p, err)
+					cli.Warning("Could not download %q: %v", p, err)
 				}
 			}
 		}()
@@ -495,21 +467,21 @@ func main() {
 	close(ch)
 	wg.Wait()
 	if stats.errors > 0 {
-		die("Encountered %d errors while downloading", stats.errors)
+		cli.Die("Encountered %d errors while downloading", stats.errors)
 	}
 
 	// Remove files (if requested).
 	var rmErrors int
 	if *removeLocalOnly {
 		for i, p := range rmPaths {
-			info("[%d / %d] Removing %q", i+1, len(rmPaths), p)
+			cli.Info("[%d / %d] Removing %q", i+1, len(rmPaths), p)
 			if err := os.Remove(filepath.Join(*toDir, p)); err != nil {
 				rmErrors++
-				warning("Could not remove %q: %v", p, err)
+				cli.Warning("Could not remove %q: %v", p, err)
 			}
 		}
 	}
 	if rmErrors > 0 {
-		die("Encountered %d errors while removing", rmErrors)
+		cli.Die("Encountered %d errors while removing", rmErrors)
 	}
 }

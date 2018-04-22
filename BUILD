@@ -10,6 +10,7 @@ go_binary(
     srcs = ["dpush.go"],
     pure = "on",
     deps = [
+        ":cli",
         ":client",
         "@org_golang_google_api//drive/v3:go_default_library",
     ],
@@ -20,6 +21,7 @@ go_binary(
     srcs = ["dsync.go"],
     pure = "on",
     deps = [
+        ":cli",
         ":client",
         "@com_golang_x_sync//errgroup:go_default_library",
         "@com_golang_x_time//rate:go_default_library",
@@ -30,6 +32,11 @@ go_binary(
 ##
 ## Libraries
 ##
+go_library(
+    name = "cli",
+    srcs = ["cli.go"],
+)
+
 go_library(
     name = "client",
     srcs = ["client.go"],
