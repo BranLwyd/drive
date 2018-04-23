@@ -23,6 +23,7 @@ go_binary(
     deps = [
         ":cli",
         ":client",
+        "@com_github_thomaso-mirodin_intmath//i64:go_default_library",
         "@com_golang_x_sync//errgroup:go_default_library",
         "@com_golang_x_time//rate:go_default_library",
         "@org_golang_google_api//drive/v3:go_default_library",

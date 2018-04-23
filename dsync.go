@@ -20,12 +20,14 @@ import (
 
 	"github.com/BranLwyd/drive/cli"
 	"github.com/BranLwyd/drive/client"
+	"github.com/thomaso-mirodin/intmath/i64"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
 	drive "google.golang.org/api/drive/v3"
 )
 
 // TODO: protect against path traversal (Drive allows a folder named "..")
+// TODO: handle multiple remote files with same name, recursive directory structure(?)
 // TODO: handle moves by copying local file rather than re-downloading
 
 var (
@@ -131,8 +133,6 @@ type remoteFileInfo struct {
 }
 
 func remoteFileInfos(ctx context.Context, drv *drive.Service, remoteFolderID string) (map[string]remoteFileInfo, error) {
-	// TODO: handle multiple files w/ same name
-	// TODO: handle recursive directory structures(?)
 	eg, ctx := errgroup.WithContext(ctx)
 
 	type workItem struct{ path, folderID string }
@@ -329,19 +329,40 @@ func download(ctx context.Context, drv *drive.Service, localFN, driveID string) 
 	return nil
 }
 
-func size(sz int64) string {
-	switch {
-	case sz >= 1<<40:
-		return fmt.Sprintf("%.02f TiB", float64(sz)/(1<<40))
-	case sz >= 1<<30:
-		return fmt.Sprintf("%.02f GiB", float64(sz)/(1<<30))
-	case sz >= 1<<20:
-		return fmt.Sprintf("%.02f MiB", float64(sz)/(1<<20))
-	case sz >= 1<<10:
-		return fmt.Sprintf("%.02f KiB", float64(sz)/(1<<10))
-	default:
-		return fmt.Sprintf("%d B", sz)
+func sizes(szs ...int64) []string {
+	if len(szs) == 0 {
+		return nil
 	}
+	maxSz := szs[0]
+	for _, sz := range szs[1:] {
+		maxSz = i64.Max(maxSz, sz)
+	}
+
+	unit, div := "B", int64(1)
+	for _, v := range []struct {
+		unit string
+		div  int64
+	}{
+		{"KiB", 1 << 10},
+		{"MiB", 1 << 20},
+		{"GiB", 1 << 30},
+		{"TiB", 1 << 40},
+	} {
+		if maxSz < v.div {
+			break
+		}
+		unit, div = v.unit, v.div
+	}
+
+	rslt := make([]string, 0, len(szs))
+	for _, sz := range szs {
+		rslt = append(rslt, fmt.Sprintf("%.02f %s", float64(sz)/float64(div), unit))
+	}
+	return rslt
+}
+
+func size(sz int64) string {
+	return sizes(sz)[0]
 }
 
 func main() {
@@ -450,7 +471,8 @@ func main() {
 				cnt, sz := stats.dlCount, stats.dlSize
 				stats.Unlock()
 
-				cli.Info("[%d / %d, %s / %s] Downloading %q", cnt, len(dlPaths), size(sz), size(totalSize), p)
+				szs := sizes(sz, totalSize)
+				cli.Info("[%d / %d, %s / %s] Downloading %q", cnt, len(dlPaths), szs[0], szs[1], p)
 				if err := download(ctx, drv, filepath.Join(*toDir, p), rfi.id); err != nil {
 					stats.Lock()
 					stats.errors++

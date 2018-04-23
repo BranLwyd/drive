@@ -40,3 +40,9 @@ go_repository(
     commit = "ce4a6d38fb6a22f17ff6bfccb76183cd85d609af",
     importpath = "cloud.google.com/go",
 )
+
+go_repository(
+    name = "com_github_thomaso-mirodin_intmath",
+    commit = "5dc6d854e46e8db72326367254b8de5d2c5f2f4f",
+    importpath = "github.com/thomaso-mirodin/intmath",
+)
