@@ -1,6 +1,4 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_prefix", "go_binary", "go_library")
-
-go_prefix("github.com/BranLwyd/drive")
+load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
 
 ##
 ## Binaries
@@ -36,11 +34,13 @@ go_binary(
 go_library(
     name = "cli",
     srcs = ["cli.go"],
+    importpath = "github.com/BranLwyd/drive/cli",
 )
 
 go_library(
     name = "client",
     srcs = ["client.go"],
+    importpath = "github.com/BranLwyd/drive/client",
     deps = [
         "@com_golang_x_oauth2//:go_default_library",
         "@com_golang_x_oauth2//google:go_default_library",
