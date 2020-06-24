@@ -26,6 +26,7 @@ import (
 	drive "google.golang.org/api/drive/v3"
 )
 
+// TODO: add support for local-file cache (mtime -> content hash, probably)
 // TODO: protect against path traversal (Drive allows a folder named "..")
 // TODO: handle multiple remote files with same name, recursive directory structure(?)
 // TODO: handle moves by copying local file rather than re-downloading
