@@ -490,7 +490,7 @@ func main() {
 	close(ch)
 	wg.Wait()
 	if stats.errors > 0 {
-		cli.Die("Encountered %d errors while downloading", stats.errors)
+		cli.Warning("Encountered %d errors while downloading", stats.errors)
 	}
 
 	// Remove files (if requested).
@@ -505,6 +505,10 @@ func main() {
 		}
 	}
 	if rmErrors > 0 {
-		cli.Die("Encountered %d errors while removing", rmErrors)
+		cli.Warning("Encountered %d errors while removing", rmErrors)
+	}
+
+	if stats.errors > 0 || rmErrors > 0 {
+		os.Exit(1)
 	}
 }
