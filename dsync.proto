@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+message LocalFilesystemCache {
+	message Entry {
+		// The modification time (ctime) of the cached file.
+		int64 time = 1;
+		// The hash of the file content.
+		bytes content_hash = 2;
+	}
+
+	// Maps the absolute path to the file to its cache entry.
+	map<string, Entry> entries = 1;
+}

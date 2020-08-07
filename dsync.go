@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
@@ -20,13 +19,17 @@ import (
 
 	"github.com/BranLwyd/drive/cli"
 	"github.com/BranLwyd/drive/client"
+	"github.com/golang/protobuf/proto"
+	"github.com/kirsle/configdir"
 	"github.com/thomaso-mirodin/intmath/i64"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sys/unix"
 	"golang.org/x/time/rate"
 	drive "google.golang.org/api/drive/v3"
+
+	pb "github.com/BranLwyd/drive/dsync_proto"
 )
 
-// TODO: add support for local-file cache (mtime -> content hash, probably)
 // TODO: protect against path traversal (Drive allows a folder named "..")
 // TODO: handle multiple remote files with same name, recursive directory structure(?)
 // TODO: handle moves by copying local file rather than re-downloading
@@ -37,6 +40,9 @@ var (
 
 	// Where to download to.
 	toDir = flag.String("to_dir", "", "The directory to download to.")
+
+	// Cache options.
+	cacheFile = flag.String("cache", "", "Location of the cache file. Will be created if it does not exist. Defaults ")
 
 	// How to sync.
 	dryRun          = flag.Bool("dry_run", false, "If set, do not actually change filesystem state.")
@@ -53,10 +59,10 @@ var (
 )
 
 type localFileInfo struct {
-	md5 []byte
+	md5 string
 }
 
-func localFileInfos(ctx context.Context, baseDir string) (map[string]localFileInfo, error) {
+func localFileInfos(ctx context.Context, fsc *filesystemCache, baseDir string) (map[string]localFileInfo, error) {
 	eg, ctx := errgroup.WithContext(ctx)
 	fileCh := make(chan string)
 	var rsltMu sync.Mutex // protects rslt
@@ -78,20 +84,15 @@ func localFileInfos(ctx context.Context, baseDir string) (map[string]localFileIn
 				}
 
 				if err := func() error {
-					f, err := os.Open(fn)
+					md5, err := fsc.ContentHash(fn)
 					if err != nil {
-						return fmt.Errorf("could not open %q: %v", fn, err)
-					}
-					defer f.Close()
-					md5 := md5.New()
-					if _, err := io.Copy(md5, f); err != nil {
-						return fmt.Errorf("could not read %q: %v", fn, err)
+						return fmt.Errorf("could not determine content hash for %q: %w", fn, err)
 					}
 					baseFn := strings.TrimPrefix(fn, baseDir)
 					if baseFn[0] == '/' {
 						baseFn = baseFn[1:]
 					}
-					ls := localFileInfo{md5.Sum(nil)}
+					ls := localFileInfo{md5}
 					rsltMu.Lock()
 					defer rsltMu.Unlock()
 					rslt[baseFn] = ls
@@ -129,7 +130,7 @@ func localFileInfos(ctx context.Context, baseDir string) (map[string]localFileIn
 
 type remoteFileInfo struct {
 	id   string
-	md5  []byte
+	md5  string
 	size int64
 }
 
@@ -223,7 +224,7 @@ func remoteFileInfos(ctx context.Context, drv *drive.Service, remoteFolderID str
 									return fmt.Errorf("could not hex-decode checksum for %q: %v", path, err)
 								}
 								rsltMu.Lock()
-								rslt[path] = remoteFileInfo{f.Id, md5, f.Size}
+								rslt[path] = remoteFileInfo{f.Id, string(md5), f.Size}
 								rsltMu.Unlock()
 							}
 						}
@@ -285,7 +286,7 @@ func diff(lfis map[string]localFileInfo, rfis map[string]remoteFileInfo) map[str
 		switch {
 		case !ok:
 			diffs[p] = REMOTE_ONLY
-		case !bytes.Equal(lfi.md5, rfi.md5):
+		case lfi.md5 != rfi.md5:
 			diffs[p] = MODIFIED
 		}
 	}
@@ -366,6 +367,150 @@ func size(sz int64) string {
 	return sizes(sz)[0]
 }
 
+type filesystemCache struct {
+	mu sync.Mutex // Protects c.
+	c  *pb.LocalFilesystemCache
+}
+
+func newFSCache() (*filesystemCache, error) {
+	// Read config.
+	fn := cacheFilename()
+	cBytes, err := ioutil.ReadFile(fn)
+	if os.IsNotExist(err) {
+		// If the file wasn't there, pretend it was empty.
+		return &filesystemCache{
+			c: &pb.LocalFilesystemCache{Entries: map[string]*pb.LocalFilesystemCache_Entry{}},
+		}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("couldn't read cache %q: %w", fn, err)
+	}
+
+	// Parse & return config.
+	c := &pb.LocalFilesystemCache{}
+	if err := proto.Unmarshal(cBytes, c); err != nil {
+		return nil, fmt.Errorf("couldn't parse cache %q: %w", fn, err)
+	}
+	return &filesystemCache{c: c}, nil
+}
+
+func (fc *filesystemCache) ContentHash(fn string) (string, error) {
+	absFN, err := filepath.Abs(fn)
+	if err != nil {
+		return "", fmt.Errorf("couldn't get absolute path for %q: %w", fn, err)
+	}
+	fn = absFN
+
+	ctim, err := ctime(fn)
+	if err != nil {
+		return "", fmt.Errorf("couldn't get ctime for %q: %w", fn, err)
+	}
+
+	// Fast path: if the file path is in the cache, and the ctime matches, return the cached hash.
+	fc.mu.Lock()
+	if e, ok := fc.c.Entries[fn]; ok {
+		if e.Time == ctim {
+			fc.mu.Unlock()
+			return string(e.ContentHash), nil
+		}
+	}
+	fc.mu.Unlock()
+
+	// Slow path: the cache didn't have the entry, or it was stale. Compute the hash by reading the file.
+	f, err := os.Open(fn)
+	if err != nil {
+		return "", fmt.Errorf("couldn't open %q: %w", fn, err)
+	}
+	defer f.Close()
+	md5 := md5.New()
+	if _, err := io.Copy(md5, f); err != nil {
+		return "", fmt.Errorf("couldn't read %q: %w", fn, err)
+	}
+	e := &pb.LocalFilesystemCache_Entry{
+		Time:        ctim,
+		ContentHash: md5.Sum(nil),
+	}
+
+	// Recheck ctime after reading content to avoid TOCTOU issues with the ctime check.
+	// The correctness of this check requires ctime to be monotonically increasing.
+	ctim, err = ctime(fn)
+	if err != nil {
+		return "", fmt.Errorf("couldn't get ctime for %q: %w", fn, err)
+	}
+	if ctim != e.Time {
+		return "", fmt.Errorf("file %q modified during hashing", fn)
+	}
+
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.c.Entries[fn] = e
+	return string(e.ContentHash), nil
+}
+
+func (fc *filesystemCache) Remove(fn string) error {
+	absFN, err := filepath.Abs(fn)
+	if err != nil {
+		return fmt.Errorf("couldn't get absolute path for %q: %w", fn, err)
+	}
+	fn = absFN
+
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	delete(fc.c.Entries, fn)
+	return nil
+}
+
+func (fc *filesystemCache) Write() error {
+	// Serialize cache.
+	cBytes, err := proto.Marshal(fc.c)
+	if err != nil {
+		return fmt.Errorf("couldn't serialize cache: %w", err)
+	}
+
+	// Write cache.
+	fn := cacheFilename()
+	cDir := filepath.Dir(fn)
+	if err := os.MkdirAll(cDir, 0750); err != nil {
+		return fmt.Errorf("couldn't create config directory %q: %w", cDir, err)
+	}
+	tempF, err := ioutil.TempFile(cDir, ".fs.cache_")
+	if err != nil {
+		return fmt.Errorf("couldn't create temporary file: %w", err)
+	}
+	tempFN := tempF.Name()
+	defer os.Remove(tempFN)
+	defer tempF.Close()
+	if err := os.Chmod(tempFN, 0640); err != nil {
+		return fmt.Errorf("couldn't set permission: %w", err)
+	}
+	if _, err := tempF.Write(cBytes); err != nil {
+		return fmt.Errorf("couldn't write content: %w", err)
+	}
+	if err := tempF.Close(); err != nil {
+		return fmt.Errorf("couldn't close: %w", err)
+	}
+	if err := os.Rename(tempFN, fn); err != nil {
+		return fmt.Errorf("couldn't rename: %w", err)
+	}
+	return nil
+
+}
+
+func ctime(fn string) (int64, error) {
+	var stat unix.Stat_t
+	if err := unix.Stat(fn, &stat); err != nil {
+		return 0, fmt.Errorf("couldn't stat %q: %w", fn, err)
+	}
+	return time.Unix(stat.Ctim.Sec, stat.Ctim.Nsec).UnixNano(), nil
+}
+
+func cacheFilename() string {
+	if *cacheFile != "" {
+		return *cacheFile
+	}
+	return filepath.Join(configdir.LocalCache("dsync"), "fs.cache")
+}
+
 func main() {
 	// Parse & sanity-check flags & command-line arguments.
 	flag.Usage = func() {
@@ -389,6 +534,11 @@ func main() {
 
 	lim = rate.NewLimiter(rate.Every(time.Duration(float64(time.Second) / *rateLimit)), 1)
 
+	fsc, err := newFSCache()
+	if err != nil {
+		cli.Die("Couldn't retrieve cache: %v", err)
+	}
+
 	// Create Google Drive client.
 	drv, err := client.Client(context.Background())
 	if err != nil {
@@ -402,7 +552,7 @@ func main() {
 	var lfis map[string]localFileInfo
 	eg.Go(func() error {
 		var err error
-		lfis, err = localFileInfos(ctx, *toDir)
+		lfis, err = localFileInfos(ctx, fsc, *toDir)
 		return err
 	})
 
@@ -498,9 +648,16 @@ func main() {
 	if *removeLocalOnly {
 		for i, p := range rmPaths {
 			cli.Info("[%d / %d] Removing %q", i+1, len(rmPaths), p)
-			if err := os.Remove(filepath.Join(*toDir, p)); err != nil {
+			fn := filepath.Join(*toDir, p)
+			if err := os.Remove(fn); err != nil {
 				rmErrors++
 				cli.Warning("Could not remove %q: %v", p, err)
+				continue
+			}
+			if err := fsc.Remove(fn); err != nil {
+				rmErrors++
+				cli.Warning("Could not remove %q from cache: %v", p, err)
+				continue
 			}
 		}
 	}
@@ -508,7 +665,12 @@ func main() {
 		cli.Warning("Encountered %d errors while removing", rmErrors)
 	}
 
-	if stats.errors > 0 || rmErrors > 0 {
+	fscWriteErr := fsc.Write()
+	if fscWriteErr != nil {
+		cli.Warning("Could not write filesystem cache back to disk: %v", err)
+	}
+
+	if stats.errors > 0 || rmErrors > 0 || fscWriteErr != nil {
 		os.Exit(1)
 	}
 }

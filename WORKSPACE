@@ -18,6 +18,13 @@ http_archive(
     ],
 )
 
+http_archive(
+    name = "com_google_protobuf",
+    sha256 = "9748c0d90e54ea09e5e75fb7fac16edce15d2028d4356f32211cfa3c0e956564",
+    strip_prefix = "protobuf-3.11.4",
+    urls = ["https://github.com/protocolbuffers/protobuf/archive/v3.11.4.zip"],
+)
+
 load("@io_bazel_rules_go//go:deps.bzl", "go_register_toolchains", "go_rules_dependencies")
 
 go_rules_dependencies()
@@ -27,6 +34,10 @@ go_register_toolchains()
 load("@bazel_gazelle//:deps.bzl", "gazelle_dependencies", "go_repository")
 
 gazelle_dependencies()
+
+load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
+
+protobuf_deps()
 
 go_repository(
     name = "com_github_golang_groupcache",
@@ -41,39 +52,15 @@ go_repository(
 )
 
 go_repository(
+    name = "com_github_kirsle_configdir",
+    commit = "e45d2f54772fea5426e7ce417474b62da9457dcc",
+    importpath = "github.com/kirsle/configdir",
+)
+
+go_repository(
     name = "com_github_thomaso-mirodin_intmath",
     commit = "5dc6d854e46e8db72326367254b8de5d2c5f2f4f",
     importpath = "github.com/thomaso-mirodin/intmath",
-)
-
-go_repository(
-    name = "com_golang_x_net",
-    commit = "627f9648deb96c27737b83199d44bb5c1010cbcf",
-    importpath = "golang.org/x/net",
-)
-
-go_repository(
-    name = "com_golang_x_oauth2",
-    commit = "bf48bf16ab8d622ce64ec6ce98d2c98f916b6303",
-    importpath = "golang.org/x/oauth2",
-)
-
-go_repository(
-    name = "com_golang_x_sync",
-    commit = "43a5402ce75a95522677f77c619865d66b8c57ab",
-    importpath = "golang.org/x/sync",
-)
-
-go_repository(
-    name = "com_golang_x_text",
-    commit = "23ae387dee1f90d29a23c0e87ee0b46038fbed0e",
-    importpath = "golang.org/x/text",
-)
-
-go_repository(
-    name = "com_golang_x_time",
-    commit = "89c76fbcd5d1cd4969e5d2fe19d48b19d5ad94a0",
-    importpath = "golang.org/x/time",
 )
 
 go_repository(
@@ -102,11 +89,43 @@ go_repository(
 )
 
 go_repository(
+    name = "org_golang_x_net",
+    commit = "627f9648deb96c27737b83199d44bb5c1010cbcf",
+    importpath = "golang.org/x/net",
+)
+
+go_repository(
+    name = "org_golang_x_oauth2",
+    commit = "bf48bf16ab8d622ce64ec6ce98d2c98f916b6303",
+    importpath = "golang.org/x/oauth2",
+)
+
+go_repository(
+    name = "org_golang_x_sync",
+    commit = "43a5402ce75a95522677f77c619865d66b8c57ab",
+    importpath = "golang.org/x/sync",
+)
+
+go_repository(
+    name = "org_golang_x_sys",
+    commit = "5acd03effb828bdfdbad4e129e7daf84af6670b4",
+    importpath = "golang.org/x/sys",
+)
+
+go_repository(
+    name = "org_golang_x_text",
+    commit = "23ae387dee1f90d29a23c0e87ee0b46038fbed0e",
+    importpath = "golang.org/x/text",
+)
+
+go_repository(
+    name = "org_golang_x_time",
+    commit = "89c76fbcd5d1cd4969e5d2fe19d48b19d5ad94a0",
+    importpath = "golang.org/x/time",
+)
+
+go_repository(
     name = "io_opencensus_go",
     commit = "5fa069b99bc903d713add0295c7e0a55d34ae573",
     importpath = "go.opencensus.io",
 )
-
-load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
-
-protobuf_deps()
